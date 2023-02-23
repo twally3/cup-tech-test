@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Static Web Application stack 
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Environment prefix
+    AllowedPattern: '[a-z]{3,4}'
+
+Resources:
+  WebappBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  WebappBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebappBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action: s3:GetObject
+            Principal:
+              CanonicalUser: !GetAtt WebappOriginAccessIdentity.S3CanonicalUserId
+            Resource: !Sub 'arn:aws:s3:::${WebappBucket}/*'
+            
+          - Effect: Deny
+            Action: 's3:*'
+            Resource: 
+              - !Sub '${WebappBucket.Arn}/*'
+              - !Sub '${WebappBucket.Arn}'
+            Principal: '*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  # @see: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html
+  WebappOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: access-identity
+
+  WebappCloudfront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        CacheBehaviors:
+          - AllowedMethods: 
+              - GET
+              - HEAD
+            Compress: true
+            PathPattern: '/interview.mock.data/*'
+            ResponseHeadersPolicyId: 60669652-455b-4ae9-85a4-c4c02393f86c
+            TargetOriginId: json-proxy
+            ForwardedValues:
+              QueryString: false
+              Cookies:
+                Forward: none
+            ViewerProtocolPolicy: redirect-to-https
+        Comment: !Sub 'CF Distribution for ${AWS::StackName}'
+        Origins:
+          - DomainName: !GetAtt WebappBucket.RegionalDomainName
+            Id: !Sub 'S3-${WebappBucket}'
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${WebappOriginAccessIdentity}'
+          - CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+            DomainName: s3.eu-west-2.amazonaws.com
+            Id: json-proxy
+        Enabled: true
+        HttpVersion: http2
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          AllowedMethods: [GET, HEAD]
+          Compress: true
+          TargetOriginId: !Sub S3-${WebappBucket}
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_100
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ErrorCachingMinTTL: 60
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 403
+            ErrorCachingMinTTL: 60
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  BucketName:
+    Value: !Ref WebappBucket
+    Description: Webapp static content bucket name
+
+  CloudfrontDistribution:
+    Value: !Ref WebappCloudfront
+    Description: Cloudfront distribution ID
+
+  CloudfrontDomain:
+    Value: !GetAtt WebappCloudfront.DomainName
+    Description: Endpoint for Cloudfront distribution
